@@ -7,8 +7,7 @@
 import * as THREE from "three";
 
 import {
-    isValueDefinition,
-    StandardStyle,
+    isLiteralDefinition,
     Style,
     StyleDeclaration,
     Theme
@@ -27,7 +26,6 @@ import { APIFormat, OmvDataSource } from "@here/harp-omv-datasource";
 import { GUI } from "dat.gui";
 import { ShadowMapViewer } from "three/examples/jsm/utils/ShadowMapViewer";
 import { accessToken } from "../config";
-import { Box3, Euler } from "three";
 
 export namespace ThreejsShadows {
     function initializeMapView(id: string, theme: Theme): MapView {
@@ -125,7 +123,7 @@ export namespace ThreejsShadows {
             // console.log(f2);
             // console.log(f3);
             // console.log(f4);
-            const box = new Box3();
+            const box = new THREE.Box3();
             frustumPoints.forEach(point => box.expandByPoint(point));
             // options.left = box.min.x;
             // options.right = box.max.x;
@@ -237,7 +235,7 @@ export namespace ThreejsShadows {
                     continue;
                 }
                 const definition = theme.definitions[definitionName];
-                if (!isValueDefinition(definition)) {
+                if (!isLiteralDefinition(definition)) {
                     const styleDeclaration = definition as StyleDeclaration;
                     patchFillStyle(styleDeclaration);
                 }
