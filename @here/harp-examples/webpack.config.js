@@ -121,7 +121,7 @@ function filterExamples(pattern) {
 
 // Uncomment and adapt to filter built examples and speed up the build significantly
 //
-//filterExamples("hello");
+filterExamples("shadow");
 
 const browserConfig = merge(commonConfig, {
     entry: webpackEntries,
@@ -199,7 +199,10 @@ const assets = [
     },
     require.resolve("three/build/three.min.js"),
     {
-        from: resolveOptional(`@here/harp.gl/dist/harp${harpBundleSuffix}.js`, "bundle examples require `yarn build-bundle`"),
+        from: resolveOptional(
+            `@here/harp.gl/dist/harp${harpBundleSuffix}.js`,
+            "bundle examples require `yarn build-bundle`"
+        ),
         to: "harp.js"
     },
     {
