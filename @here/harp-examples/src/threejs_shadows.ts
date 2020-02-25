@@ -29,7 +29,7 @@ import { APIFormat, OmvDataSource } from "@here/harp-omv-datasource";
 import { GUI } from "dat.gui";
 import { ShadowMapViewer } from "three/examples/jsm/utils/ShadowMapViewer";
 import { accessToken } from "../config";
-import { Vector3 } from "three";
+import { Vector3, BufferAttribute } from "three";
 
 let shadowMapViewerCreated = false;
 
@@ -46,20 +46,12 @@ const updateLightCamera = (map: MapView, light: THREE.DirectionalLight, options:
             lightShadowMapViewer.render(map.renderer);
         });
     }
-
-    /*const targetPos = light.target.position;
-    targetPos.setX(options.xtar / divider);
-    targetPos.setY(options.ytar / divider);
-    targetPos.setZ(options.ztar / divider);
-    light.target.updateMatrixWorld();
-    */ const lightPos =
-        light.position;
+    const lightPos = light.position;
     const divider = 1;
     lightPos.setX(options.xpos / divider);
     lightPos.setY(options.ypos / divider);
     lightPos.setZ(options.zpos / divider);
-    light.updateMatrixWorld();
-    light.shadow.updateMatrices(light);
+    map.update();
 };
 
 const options = {
@@ -88,6 +80,15 @@ const swapCamera = (
     map.pointOfView = mapControls.enabled ? undefined : debugCamera;
 };
 
+const positions: number[] = new Array<number>(24 * 2);
+const pointsGeo = new THREE.BufferGeometry();
+pointsGeo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+const material = new THREE.PointsMaterial({
+    size: 45,
+    color: new THREE.Color("#ff0000")
+});
+const points = new THREE.Points(pointsGeo, material);
+
 export namespace ThreejsShadows {
     function initializeMapView(id: string, theme: Theme): MapView {
         const canvas = document.getElementById(id) as HTMLCanvasElement;
@@ -113,14 +114,29 @@ export namespace ThreejsShadows {
             map.resize(window.innerWidth, window.innerHeight);
         });
 
+        const ch = new THREE.CameraHelper(map["m_rteCamera"]);
+        // Enable to see the camera in relation to the shadow camera.
+        //map.scene.add(ch);
+        map.scene.add(points);
+
         addOmvDataSource(map);
 
         map.update();
 
-        let frustum = new THREE.Frustum();
         map.addEventListener(MapViewEventNames.Render, _ => {
+            if (map.pointOfView !== undefined) {
+                ch.update();
+            }
             const NDCToView = (x: number, y: number, z: number) => {
-                return new THREE.Vector3(x, y, z).applyMatrix4(map.camera.projectionMatrixInverse);
+                return (
+                    new THREE.Vector3(x, y, z)
+                        .applyMatrix4(map.camera.projectionMatrixInverse)
+                        // Make sure to apply rotation.
+                        .applyMatrix4(map["m_rteCamera"].matrixWorld)
+                );
+            };
+            const ViewToLightSpace = (worldPos: THREE.Vector3, camera: THREE.Camera) => {
+                return worldPos.applyMatrix4(camera.matrixWorldInverse);
             };
             const target = MapViewUtils.getWorldTargetFromCamera(map.camera, map.projection);
             if (target === null) {
@@ -138,16 +154,73 @@ export namespace ThreejsShadows {
 
             map.scene.children.forEach((obj: THREE.Object3D) => {
                 if ((obj as any).isDirectionalLight) {
-                    // set the orthographic bounds based on the camera.
-                    const n1 = NDCToView(-1, -1, -1);
-                    const f4 = NDCToView(1, 1, 1);
-                    options.left = -f4.x;
-                    options.right = f4.x;
-                    options.top = f4.y;
-                    options.bottom = -f4.y;
-                    options.near = -n1.z;
-                    options.far = -f4.z;
                     const light = obj as THREE.DirectionalLight;
+                    const w = 1;
+                    const h = 1;
+
+                    const viewn1 = NDCToView(-w, -h, -1);
+                    const viewn2 = NDCToView(w, -h, -1);
+                    const viewn3 = NDCToView(-w, h, -1);
+                    const viewn4 = NDCToView(w, h, -1);
+
+                    // far
+                    const viewf1 = NDCToView(-w, -h, 1);
+                    const viewf2 = NDCToView(w, -h, 1);
+                    const viewf3 = NDCToView(-w, h, 1);
+                    const viewf4 = NDCToView(w, h, 1);
+
+                    const frustumPointsView = [
+                        viewn1,
+                        viewn2,
+                        viewn3,
+                        viewn4,
+                        viewf1,
+                        viewf2,
+                        viewf3,
+                        viewf4
+                    ];
+                    const boxview = new THREE.Box3();
+
+                    const positions_ = pointsGeo.attributes.position.array as any;
+                    let i = 0;
+                    frustumPointsView.forEach(point => {
+                        boxview.expandByPoint(point);
+
+                        positions_[i++] = point.x;
+                        positions_[i++] = point.y;
+                        positions_[i++] = point.z;
+                    });
+                    (pointsGeo.attributes.position as BufferAttribute).needsUpdate = true;
+
+                    // set the orthographic bounds based on the camera.
+                    // near
+                    const n1 = ViewToLightSpace(viewn1, light.shadow.camera);
+                    const n2 = ViewToLightSpace(viewn2, light.shadow.camera);
+                    const n3 = ViewToLightSpace(viewn3, light.shadow.camera);
+                    const n4 = ViewToLightSpace(viewn4, light.shadow.camera);
+
+                    // far
+                    const f1 = ViewToLightSpace(viewf1, light.shadow.camera);
+                    const f2 = ViewToLightSpace(viewf2, light.shadow.camera);
+                    const f3 = ViewToLightSpace(viewf3, light.shadow.camera);
+                    const f4 = ViewToLightSpace(viewf4, light.shadow.camera);
+
+                    const frustumPoints = [n1, n2, n3, n4, f1, f2, f3, f4];
+                    const box = new THREE.Box3();
+                    frustumPoints.forEach(point => {
+                        box.expandByPoint(point);
+
+                        positions_[i++] = point.x;
+                        positions_[i++] = point.y;
+                        positions_[i++] = point.z;
+                    });
+
+                    options.left = box.min.x;
+                    options.right = box.max.x;
+                    options.top = box.max.y;
+                    options.bottom = box.min.y;
+                    options.near = -box.max.z;
+                    options.far = -box.min.z;
                     Object.assign(light.shadow.camera, options);
                     light.shadow.camera.updateProjectionMatrix();
                     const direction = new Vector3();
@@ -163,6 +236,7 @@ export namespace ThreejsShadows {
 
                     light.target.updateMatrixWorld();
                     light.updateMatrixWorld(); // needed?
+                    light.shadow.updateMatrices(light);
                     if (light.userData !== undefined && light.userData.helper !== undefined)
                         (light.userData.helper as THREE.CameraHelper).update();
                     //frustum.setFromMatrix(map.camera.projectionMatrix);
@@ -267,7 +341,8 @@ export namespace ThreejsShadows {
                             (obj as THREE.DirectionalLight).shadow.camera
                         )
                     };
-                    map.scene.add(light.userData.helper);
+                    // Enable to debug the shadow camera
+                    //map.scene.add(light.userData.helper);
                 }
             });
             map.update();
