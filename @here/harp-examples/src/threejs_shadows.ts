@@ -22,30 +22,18 @@ import {
     CopyrightInfo,
     MapView,
     MapViewEventNames,
-    ThemeLoader
+    ThemeLoader,
+    MapViewUtils
 } from "@here/harp-mapview";
 import { APIFormat, OmvDataSource } from "@here/harp-omv-datasource";
 import { GUI } from "dat.gui";
 import { ShadowMapViewer } from "three/examples/jsm/utils/ShadowMapViewer";
 import { accessToken } from "../config";
+import { Vector3 } from "three";
 
 let shadowMapViewerCreated = false;
 
 const updateLightCamera = (map: MapView, light: THREE.DirectionalLight, options: any) => {
-    const NDCToView = (x: number, y: number, z: number) => {
-        return new THREE.Vector3(x, y, z).applyMatrix4(map.camera.projectionMatrixInverse);
-    };
-    // set the orthographic bounds based on the camera.
-    const n1 = NDCToView(-1, -1, -1);
-    const f4 = NDCToView(1, 1, 1);
-    options.left = -f4.x;
-    options.right = f4.x;
-    options.top = f4.y;
-    options.bottom = -f4.y;
-    options.near = -n1.z + options.zpos;
-    options.far = -f4.z + options.zpos;
-    Object.assign(light.shadow.camera, options);
-
     if (shadowMapViewerCreated === false) {
         shadowMapViewerCreated = true;
         const lightShadowMapViewer = new ShadowMapViewer(light) as any;
@@ -59,13 +47,14 @@ const updateLightCamera = (map: MapView, light: THREE.DirectionalLight, options:
         });
     }
 
-    const targetPos = light.target.position;
-    const divider = 1;
+    /*const targetPos = light.target.position;
     targetPos.setX(options.xtar / divider);
     targetPos.setY(options.ytar / divider);
     targetPos.setZ(options.ztar / divider);
     light.target.updateMatrixWorld();
-    const lightPos = light.position;
+    */ const lightPos =
+        light.position;
+    const divider = 1;
     lightPos.setX(options.xpos / divider);
     lightPos.setY(options.ypos / divider);
     lightPos.setZ(options.zpos / divider);
@@ -130,13 +119,56 @@ export namespace ThreejsShadows {
 
         let frustum = new THREE.Frustum();
         map.addEventListener(MapViewEventNames.Render, _ => {
-            /*map.scene.children.forEach((obj: THREE.Object3D) => {
+            const NDCToView = (x: number, y: number, z: number) => {
+                return new THREE.Vector3(x, y, z).applyMatrix4(map.camera.projectionMatrixInverse);
+            };
+            const target = MapViewUtils.getWorldTargetFromCamera(map.camera, map.projection);
+            if (target === null) {
+                return;
+            }
+            const normal = map.projection.surfaceNormal(target, new Vector3());
+            // Should point down.
+            normal.multiplyScalar(-1);
+            // Consider perf optimization.
+            //const toTarget = target.clone().sub(map.camera.position);
+            // const distanceToTarget = toTarget.length();
+            //const cameraDirection = map.camera.getWorldDirection(new Vector3());
+            const tilt = MapViewUtils.extractCameraTilt(map.camera, map.projection);
+            const cameraHeight = map.targetDistance * Math.cos(tilt);
+
+            map.scene.children.forEach((obj: THREE.Object3D) => {
                 if ((obj as any).isDirectionalLight) {
+                    // set the orthographic bounds based on the camera.
+                    const n1 = NDCToView(-1, -1, -1);
+                    const f4 = NDCToView(1, 1, 1);
+                    options.left = -f4.x;
+                    options.right = f4.x;
+                    options.top = f4.y;
+                    options.bottom = -f4.y;
+                    options.near = -n1.z;
+                    options.far = -f4.z;
                     const light = obj as THREE.DirectionalLight;
+                    Object.assign(light.shadow.camera, options);
+                    light.shadow.camera.updateProjectionMatrix();
+                    const direction = new Vector3();
+                    direction.copy(light.target.position);
+                    direction.sub(light.position);
+                    direction.normalize();
+                    const lightPosHyp = cameraHeight / normal.clone().dot(direction);
+                    light.target.position.copy(target).sub(map.camera.position);
+                    // Consider adding the light.target to the scene to make this automatic.
+                    light.position.copy(target);
+                    light.position.addScaledVector(direction, -lightPosHyp);
+                    light.position.sub(map.camera.position);
+
+                    light.target.updateMatrixWorld();
+                    light.updateMatrixWorld(); // needed?
+                    if (light.userData !== undefined && light.userData.helper !== undefined)
+                        (light.userData.helper as THREE.CameraHelper).update();
                     //frustum.setFromMatrix(map.camera.projectionMatrix);
-                    light.shadow.camera.projectionMatrix = map.camera.projectionMatrix;
+                    //light.shadow.camera.projectionMatrix = map.camera.projectionMatrix;
                     //light.shadow.camera.updateProjectionMatrix();
-                    const pos = light.target.position;
+                    /*const pos = light.target.position;
                     const divider = 1;
                     pos.setX(options.xtar / divider);
                     pos.setY(options.ytar / divider);
@@ -147,11 +179,11 @@ export namespace ThreejsShadows {
                     lightPos.setY(options.ypos / divider);
                     lightPos.setZ(options.zpos / divider);
                     light.updateMatrixWorld();
-                    light.shadow.updateMatrices(light);
+                    light.shadow.updateMatrices(light);*/
                     //console.log("done");
                     // updateLightCamera(map, light, options);
                 }
-            });*/
+            });
         });
 
         const m_debugCamera = new THREE.PerspectiveCamera(
@@ -229,21 +261,25 @@ export namespace ThreejsShadows {
         promise.then(updateLights).then(() => {
             map.scene.children.forEach((obj: THREE.Object3D) => {
                 if ((obj as any).isDirectionalLight) {
-                    map.scene.add(
-                        new THREE.CameraHelper((obj as THREE.DirectionalLight).shadow.camera)
-                    );
+                    const light = obj as THREE.DirectionalLight;
+                    light.userData = {
+                        helper: new THREE.CameraHelper(
+                            (obj as THREE.DirectionalLight).shadow.camera
+                        )
+                    };
+                    map.scene.add(light.userData.helper);
                 }
             });
             map.update();
         });
 
         const gui = new GUI({ width: 300 });
-        gui.add(options, "xpos", -100, 100).onChange(updateLights);
-        gui.add(options, "ypos", -100, 100).onChange(updateLights);
-        gui.add(options, "zpos", -2000, 100).onChange(updateLights);
-        gui.add(options, "xtar", -100, 100).onChange(updateLights);
-        gui.add(options, "ytar", -100, 100).onChange(updateLights);
-        gui.add(options, "ztar", -2000, 100).onChange(updateLights);
+        gui.add(options, "xpos", -2000, 2000).onChange(updateLights);
+        gui.add(options, "ypos", -2000, 2000).onChange(updateLights);
+        gui.add(options, "zpos", -2000, 2000).onChange(updateLights);
+        // gui.add(options, "xtar", -100, 100).onChange(updateLights);
+        // gui.add(options, "ytar", -100, 100).onChange(updateLights);
+        // gui.add(options, "ztar", -2000, 100).onChange(updateLights);
 
         return map;
     }
@@ -279,7 +315,7 @@ export namespace ThreejsShadows {
                 intensity: 1,
                 direction: {
                     x: 0,
-                    y: 0.1,
+                    y: 0.01,
                     z: 1
                 },
                 castShadow: true
