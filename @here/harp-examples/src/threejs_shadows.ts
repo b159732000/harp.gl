@@ -4,75 +4,42 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import * as THREE from "three";
-import "three/examples/js/controls/TrackballControls";
-
 import {
     isLiteralDefinition,
     Style,
     StyleDeclaration,
-    Theme,
-    DirectionalLight
+    Theme
 } from "@here/harp-datasource-protocol";
 import { isJsonExpr } from "@here/harp-datasource-protocol/lib/Expr";
-import { GeoCoordinates } from "@here/harp-geoutils";
-import { MapControls, MapControlsUI, CameraRotationAnimation } from "@here/harp-map-controls";
+import { GeoCoordinates, Vector3Like } from "@here/harp-geoutils";
+import { MapControls, MapControlsUI } from "@here/harp-map-controls";
 import {
     CopyrightElementHandler,
     CopyrightInfo,
     MapView,
     MapViewEventNames,
-    ThemeLoader,
-    MapViewUtils
+    MapViewUtils,
+    ThemeLoader
 } from "@here/harp-mapview";
 import { APIFormat, OmvDataSource } from "@here/harp-omv-datasource";
 import { GUI } from "dat.gui";
+import * as THREE from "three";
+import "three/examples/js/controls/TrackballControls";
 import { ShadowMapViewer } from "three/examples/jsm/utils/ShadowMapViewer";
 import { accessToken } from "../config";
-import { Vector3, BufferAttribute } from "three";
 
-let shadowMapViewerCreated = false;
+let directionalLight: THREE.DirectionalLight;
+let map: MapView;
 
-const updateLightCamera = (map: MapView, light: THREE.DirectionalLight, options: any) => {
-    if (shadowMapViewerCreated === false) {
-        shadowMapViewerCreated = true;
-        const lightShadowMapViewer = new ShadowMapViewer(light) as any;
-        lightShadowMapViewer.position.x = 10;
-        lightShadowMapViewer.position.y = 10;
-        lightShadowMapViewer.size.width = 4096 / 16;
-        lightShadowMapViewer.size.height = 4096 / 16;
-        lightShadowMapViewer.update();
-        map.addEventListener(MapViewEventNames.AfterRender, () => {
-            lightShadowMapViewer.render(map.renderer);
-        });
-    }
-    const lightPos = light.position;
-    const divider = 1;
-    lightPos.setX(options.xpos / divider);
-    lightPos.setY(options.ypos / divider);
-    lightPos.setZ(options.zpos / divider);
-    map.update();
-};
-
-const options = {
-    top: 100,
-    left: -100,
-    right: 100,
-    bottom: -100,
-    far: 100,
-    near: 0,
-    xpos: 100,
+const guiOptions = {
+    xpos: 0,
     ypos: 0,
-    zpos: -1700,
-    xtar: 0,
-    ytar: 0,
-    ztar: -2000
+    zpos: 0
 };
 
 const swapCamera = (
     mapControls: MapControls,
     trackBall: any,
-    map: MapView,
     debugCamera: THREE.PerspectiveCamera
 ) => {
     mapControls.enabled = !mapControls.enabled;
@@ -80,19 +47,133 @@ const swapCamera = (
     map.pointOfView = mapControls.enabled ? undefined : debugCamera;
 };
 
-const positions: number[] = new Array<number>(24 * 2);
-const pointsGeo = new THREE.BufferGeometry();
-pointsGeo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-const material = new THREE.PointsMaterial({
-    size: 45,
-    color: new THREE.Color("#ff0000")
-});
-const points = new THREE.Points(pointsGeo, material);
+const setupDebugCamera = (mapControls: MapControls) => {
+    // tslint:disable-next-line: no-string-literal
+    const mapCamera = new THREE.CameraHelper(map["m_rteCamera"]);
+    map.scene.add(mapCamera);
+
+    const debugCamera = new THREE.PerspectiveCamera(
+        map.camera.fov,
+        map.canvas.width / map.canvas.height,
+        100,
+        100000
+    );
+    map.scene.add(debugCamera);
+    debugCamera.position.set(6000, 2000, 1000);
+
+    const m_trackball = new (THREE as any).TrackballControls(debugCamera, map.canvas);
+    m_trackball.enabled = false;
+    m_trackball.addEventListener("start", () => {
+        map.beginAnimation();
+    });
+    m_trackball.addEventListener("end", () => {
+        map.endAnimation();
+    });
+    m_trackball.addEventListener("change", () => {
+        map.update();
+    });
+
+    // Update the debug controls before rendering.
+    map.addEventListener(MapViewEventNames.Render, () => {
+        if (m_trackball !== undefined) {
+            m_trackball.update();
+        }
+        const enableCameraHelpers = map.pointOfView !== undefined;
+        if (enableCameraHelpers) {
+            mapCamera.update();
+            directionalLight?.userData.helper.update();
+        }
+        mapCamera.visible = enableCameraHelpers;
+        if (directionalLight !== undefined && directionalLight.userData !== undefined) {
+            directionalLight.userData.helper.visible = enableCameraHelpers;
+        }
+    });
+
+    window.addEventListener("keypress", event => {
+        if (event.key === "s") {
+            swapCamera(mapControls, m_trackball, debugCamera);
+            map.update();
+        }
+    });
+};
+
+const computeShadowFrustum = () => {
+    if (directionalLight === undefined) {
+        return;
+    }
+
+    const NDCToView = (vector: Vector3Like): THREE.Vector3 => {
+        return (
+            new THREE.Vector3(vector.x, vector.y, vector.z)
+                .applyMatrix4(map.camera.projectionMatrixInverse)
+                // Make sure to apply rotation, hence use the rte camera
+                // tslint:disable-next-line: no-string-literal
+                .applyMatrix4(map["m_rteCamera"].matrixWorld)
+        );
+    };
+    const ViewToLightSpace = (worldPos: THREE.Vector3, camera: THREE.Camera): THREE.Vector3 => {
+        return worldPos.applyMatrix4(camera.matrixWorldInverse);
+    };
+    const points: Vector3Like[] = [
+        // near plane points
+        { x: -1, y: -1, z: -1 },
+        { x: 1, y: -1, z: -1 },
+        { x: -1, y: 1, z: -1 },
+        { x: 1, y: 1, z: -1 },
+
+        // far planes points
+        { x: -1, y: -1, z: 1 },
+        { x: 1, y: -1, z: 1 },
+        { x: -1, y: 1, z: 1 },
+        { x: 1, y: 1, z: 1 }
+    ];
+    const transformedPoints = points
+        .map(p => NDCToView(p))
+        .map(p => ViewToLightSpace(p, directionalLight.shadow.camera));
+    const box = new THREE.Box3();
+    transformedPoints.forEach(point => {
+        box.expandByPoint(point);
+    });
+    Object.assign(directionalLight.shadow.camera, {
+        left: box.min.x,
+        right: box.max.x,
+        top: box.max.y,
+        bottom: box.min.y,
+        near: -box.max.z,
+        far: -box.min.z
+    });
+    directionalLight.shadow.camera.updateProjectionMatrix();
+
+    const lightDirection = new THREE.Vector3();
+    lightDirection.copy(directionalLight.target.position);
+    lightDirection.sub(directionalLight.position);
+    lightDirection.normalize();
+
+    const target = MapViewUtils.getWorldTargetFromCamera(map.camera, map.projection);
+    if (target === null) {
+        return;
+    }
+    const normal = map.projection.surfaceNormal(target, new THREE.Vector3());
+    // Should point down.
+    normal.multiplyScalar(-1);
+
+    // The camera of the shadow has the same height as the map camera, and the target is also the
+    // same. The position is then calculated based on the light direction and the height using basic
+    // trigonometry.
+    const tilt = MapViewUtils.extractCameraTilt(map.camera, map.projection);
+    const cameraHeight = map.targetDistance * Math.cos(tilt);
+    const lightPosHyp = cameraHeight / normal.clone().dot(lightDirection);
+
+    directionalLight.target.position.copy(target).sub(map.camera.position);
+    directionalLight.position.copy(target);
+    directionalLight.position.addScaledVector(lightDirection, -lightPosHyp);
+    directionalLight.position.sub(map.camera.position);
+};
 
 export namespace ThreejsShadows {
     function initializeMapView(id: string, theme: Theme): MapView {
         const canvas = document.getElementById(id) as HTMLCanvasElement;
-        const map = new MapView({
+        map = new MapView({
             canvas,
             theme,
             enableShadows: true
@@ -114,193 +195,16 @@ export namespace ThreejsShadows {
             map.resize(window.innerWidth, window.innerHeight);
         });
 
-        const ch = new THREE.CameraHelper(map["m_rteCamera"]);
-        // Enable to see the camera in relation to the shadow camera.
-        //map.scene.add(ch);
-        map.scene.add(points);
+        addOmvDataSource();
 
-        addOmvDataSource(map);
+        map.addEventListener(MapViewEventNames.Render, computeShadowFrustum);
+        setupDebugCamera(mapControls);
 
         map.update();
-
-        map.addEventListener(MapViewEventNames.Render, _ => {
-            if (map.pointOfView !== undefined) {
-                ch.update();
-            }
-            const NDCToView = (x: number, y: number, z: number) => {
-                return (
-                    new THREE.Vector3(x, y, z)
-                        .applyMatrix4(map.camera.projectionMatrixInverse)
-                        // Make sure to apply rotation.
-                        .applyMatrix4(map["m_rteCamera"].matrixWorld)
-                );
-            };
-            const ViewToLightSpace = (worldPos: THREE.Vector3, camera: THREE.Camera) => {
-                return worldPos.applyMatrix4(camera.matrixWorldInverse);
-            };
-            const target = MapViewUtils.getWorldTargetFromCamera(map.camera, map.projection);
-            if (target === null) {
-                return;
-            }
-            const normal = map.projection.surfaceNormal(target, new Vector3());
-            // Should point down.
-            normal.multiplyScalar(-1);
-            // Consider perf optimization.
-            //const toTarget = target.clone().sub(map.camera.position);
-            // const distanceToTarget = toTarget.length();
-            //const cameraDirection = map.camera.getWorldDirection(new Vector3());
-            const tilt = MapViewUtils.extractCameraTilt(map.camera, map.projection);
-            const cameraHeight = map.targetDistance * Math.cos(tilt);
-
-            map.scene.children.forEach((obj: THREE.Object3D) => {
-                if ((obj as any).isDirectionalLight) {
-                    const light = obj as THREE.DirectionalLight;
-                    const w = 1;
-                    const h = 1;
-
-                    const viewn1 = NDCToView(-w, -h, -1);
-                    const viewn2 = NDCToView(w, -h, -1);
-                    const viewn3 = NDCToView(-w, h, -1);
-                    const viewn4 = NDCToView(w, h, -1);
-
-                    // far
-                    const viewf1 = NDCToView(-w, -h, 1);
-                    const viewf2 = NDCToView(w, -h, 1);
-                    const viewf3 = NDCToView(-w, h, 1);
-                    const viewf4 = NDCToView(w, h, 1);
-
-                    const frustumPointsView = [
-                        viewn1,
-                        viewn2,
-                        viewn3,
-                        viewn4,
-                        viewf1,
-                        viewf2,
-                        viewf3,
-                        viewf4
-                    ];
-                    const boxview = new THREE.Box3();
-
-                    const positions_ = pointsGeo.attributes.position.array as any;
-                    let i = 0;
-                    frustumPointsView.forEach(point => {
-                        boxview.expandByPoint(point);
-
-                        positions_[i++] = point.x;
-                        positions_[i++] = point.y;
-                        positions_[i++] = point.z;
-                    });
-                    (pointsGeo.attributes.position as BufferAttribute).needsUpdate = true;
-
-                    // set the orthographic bounds based on the camera.
-                    // near
-                    const n1 = ViewToLightSpace(viewn1, light.shadow.camera);
-                    const n2 = ViewToLightSpace(viewn2, light.shadow.camera);
-                    const n3 = ViewToLightSpace(viewn3, light.shadow.camera);
-                    const n4 = ViewToLightSpace(viewn4, light.shadow.camera);
-
-                    // far
-                    const f1 = ViewToLightSpace(viewf1, light.shadow.camera);
-                    const f2 = ViewToLightSpace(viewf2, light.shadow.camera);
-                    const f3 = ViewToLightSpace(viewf3, light.shadow.camera);
-                    const f4 = ViewToLightSpace(viewf4, light.shadow.camera);
-
-                    const frustumPoints = [n1, n2, n3, n4, f1, f2, f3, f4];
-                    const box = new THREE.Box3();
-                    frustumPoints.forEach(point => {
-                        box.expandByPoint(point);
-
-                        positions_[i++] = point.x;
-                        positions_[i++] = point.y;
-                        positions_[i++] = point.z;
-                    });
-
-                    options.left = box.min.x;
-                    options.right = box.max.x;
-                    options.top = box.max.y;
-                    options.bottom = box.min.y;
-                    options.near = -box.max.z;
-                    options.far = -box.min.z;
-                    Object.assign(light.shadow.camera, options);
-                    light.shadow.camera.updateProjectionMatrix();
-                    const direction = new Vector3();
-                    direction.copy(light.target.position);
-                    direction.sub(light.position);
-                    direction.normalize();
-                    const lightPosHyp = cameraHeight / normal.clone().dot(direction);
-                    light.target.position.copy(target).sub(map.camera.position);
-                    // Consider adding the light.target to the scene to make this automatic.
-                    light.position.copy(target);
-                    light.position.addScaledVector(direction, -lightPosHyp);
-                    light.position.sub(map.camera.position);
-
-                    light.target.updateMatrixWorld();
-                    light.updateMatrixWorld(); // needed?
-                    light.shadow.updateMatrices(light);
-                    if (light.userData !== undefined && light.userData.helper !== undefined)
-                        (light.userData.helper as THREE.CameraHelper).update();
-                    //frustum.setFromMatrix(map.camera.projectionMatrix);
-                    //light.shadow.camera.projectionMatrix = map.camera.projectionMatrix;
-                    //light.shadow.camera.updateProjectionMatrix();
-                    /*const pos = light.target.position;
-                    const divider = 1;
-                    pos.setX(options.xtar / divider);
-                    pos.setY(options.ytar / divider);
-                    pos.setZ(options.ztar / divider);
-                    light.target.updateMatrixWorld();
-                    const lightPos = light.position;
-                    lightPos.setX(options.xpos / divider);
-                    lightPos.setY(options.ypos / divider);
-                    lightPos.setZ(options.zpos / divider);
-                    light.updateMatrixWorld();
-                    light.shadow.updateMatrices(light);*/
-                    //console.log("done");
-                    // updateLightCamera(map, light, options);
-                }
-            });
-        });
-
-        const m_debugCamera = new THREE.PerspectiveCamera(
-            map.camera.fov,
-            map.canvas.width / map.canvas.height,
-            0.1,
-            100000
-        ); // use an arbitrary large distance for the far plane.
-
-        map.scene.add(m_debugCamera);
-
-        m_debugCamera.position.set(0, 0, 10);
-
-        const m_trackball = new (THREE as any).TrackballControls(m_debugCamera, map.canvas);
-        m_trackball.enabled = false;
-
-        m_trackball.addEventListener("start", () => {
-            map.beginAnimation();
-        });
-        m_trackball.addEventListener("end", () => {
-            map.endAnimation();
-        });
-        m_trackball.addEventListener("change", () => {
-            map.update();
-        });
-        // Update the debug controls.
-        map.addEventListener(MapViewEventNames.Render, () => {
-            if (m_trackball !== undefined) {
-                m_trackball.update();
-            }
-        });
-
-        window.addEventListener("keypress", event => {
-            if (event.key === "s") {
-                swapCamera(mapControls, m_trackball, map, m_debugCamera);
-                map.update();
-            }
-        });
-
         return map;
     }
 
-    function addOmvDataSource(map: MapView) {
+    function addOmvDataSource() {
         const hereCopyrightInfo: CopyrightInfo = {
             id: "here.com",
             year: new Date().getFullYear(),
@@ -319,42 +223,55 @@ export namespace ThreejsShadows {
         });
 
         const promise = map.addDataSource(omvDataSource);
-
-        map.renderer.shadowMap.enabled = true;
-        map.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
-        const updateLights = () => {
+        promise.then(() => {
             map.scene.children.forEach((obj: THREE.Object3D) => {
                 if ((obj as any).isDirectionalLight) {
-                    const light = obj as THREE.DirectionalLight;
-                    updateLightCamera(map, light, options);
-                }
-            });
-            map.update();
-        };
-        promise.then(updateLights).then(() => {
-            map.scene.children.forEach((obj: THREE.Object3D) => {
-                if ((obj as any).isDirectionalLight) {
-                    const light = obj as THREE.DirectionalLight;
-                    light.userData = {
+                    if (directionalLight !== undefined) {
+                        return;
+                    }
+                    // Keep reference to the light.
+                    directionalLight = obj as THREE.DirectionalLight;
+                    // Add the camera helper to help debug
+                    directionalLight.userData = {
                         helper: new THREE.CameraHelper(
                             (obj as THREE.DirectionalLight).shadow.camera
                         )
                     };
-                    // Enable to debug the shadow camera
-                    //map.scene.add(light.userData.helper);
+                    map.scene.add(directionalLight.userData.helper);
+                    // This is needed so that the target is updated automatically, see:
+                    // https://threejs.org/docs/#api/en/lights/DirectionalLight.target
+                    map.scene.add(directionalLight.target);
+                    // Add the shadow map texture viewer
+                    const lightShadowMapViewer = new ShadowMapViewer(directionalLight) as any;
+                    lightShadowMapViewer.position.x = 10;
+                    lightShadowMapViewer.position.y = 10;
+                    lightShadowMapViewer.size.width = 4096 / 16;
+                    lightShadowMapViewer.size.height = 4096 / 16;
+                    lightShadowMapViewer.update();
+                    map.addEventListener(MapViewEventNames.AfterRender, () => {
+                        lightShadowMapViewer.render(map.renderer);
+                    });
                 }
             });
-            map.update();
         });
 
+        map.renderer.shadowMap.enabled = true;
+        map.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+        const updateLight = () => {
+            if (directionalLight === undefined) {
+                throw new Error("Missing directional light");
+            }
+            const lightPos = directionalLight.position;
+            lightPos.setX(guiOptions.xpos);
+            lightPos.setY(guiOptions.ypos);
+            lightPos.setZ(guiOptions.zpos);
+            map.update();
+        };
         const gui = new GUI({ width: 300 });
-        gui.add(options, "xpos", -2000, 2000).onChange(updateLights);
-        gui.add(options, "ypos", -2000, 2000).onChange(updateLights);
-        gui.add(options, "zpos", -2000, 2000).onChange(updateLights);
-        // gui.add(options, "xtar", -100, 100).onChange(updateLights);
-        // gui.add(options, "ytar", -100, 100).onChange(updateLights);
-        // gui.add(options, "ztar", -2000, 100).onChange(updateLights);
+        gui.add(guiOptions, "xpos", -2000, 2000).onChange(updateLight);
+        gui.add(guiOptions, "ypos", -2000, 2000).onChange(updateLight);
+        gui.add(guiOptions, "zpos", -2000, 2000).onChange(updateLight);
 
         return map;
     }
@@ -364,7 +281,6 @@ export namespace ThreejsShadows {
             const style = styleDeclaration as Style;
             if (style.technique === "fill") {
                 (style as any).technique = "standard";
-                // ((style as any) as StandardStyle).attr!.roughness = 1.0;
             }
         }
     }
@@ -420,5 +336,13 @@ export namespace ThreejsShadows {
     ThemeLoader.load("resources/berlin_tilezen_base.json").then((theme: Theme) => {
         patchTheme(theme);
         initializeMapView("mapCanvas", theme);
+
+        const message = document.createElement("div");
+        message.style.position = "absolute";
+        message.style.cssFloat = "right";
+        message.style.top = "120px";
+        message.style.right = "10px";
+        message.innerHTML = `Press 's' to toggle the debug camera.`;
+        document.body.appendChild(message);
     });
 }
