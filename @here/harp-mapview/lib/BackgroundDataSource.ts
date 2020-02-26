@@ -20,7 +20,7 @@ export class BackgroundDataSource extends DataSource {
     private m_tilingScheme: TilingScheme = BackgroundDataSource.DEFAULT_TILING_SCHEME;
 
     private m_material: Material;
-    constructor(readonly shadowsEnabled: boolean) {
+    constructor(readonly shadowsEnabled?: boolean) {
         super("background");
         this.cacheable = true;
         this.m_material = this.createMaterial(new Color());
@@ -96,7 +96,7 @@ export class BackgroundDataSource extends DataSource {
     }
 
     private createMaterial(color: Color): Material {
-        if (this.shadowsEnabled) {
+        if (this.shadowsEnabled === true) {
             return new MapMeshStandardMaterial({
                 color,
                 visible: true,
