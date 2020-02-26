@@ -71,15 +71,6 @@ import { ThemeLoader } from "./ThemeLoader";
 import { Tile } from "./Tile";
 import { MapViewUtils } from "./Utils";
 import { ResourceComputationType, VisibleTileSet, VisibleTileSetOptions } from "./VisibleTileSet";
-import {
-    BasicShadowMap,
-    PCFShadowMap,
-    PCFSoftShadowMap,
-    VSMShadowMap,
-    OrthographicCamera,
-    DirectionalLight,
-    Color
-} from "three";
 
 declare const process: any;
 
@@ -3197,7 +3188,7 @@ export class MapView extends THREE.EventDispatcher {
                 this.m_scene.add(light);
                 if ((light as any).isDirectionalLight) {
                     const helper = new THREE.DirectionalLightHelper(
-                        light as DirectionalLight,
+                        light as THREE.DirectionalLight,
                         50000
                     );
                     this.m_scene.add(helper);
@@ -3218,7 +3209,7 @@ export class MapView extends THREE.EventDispatcher {
                         near: 1
                     });
                     this.renderer.shadowMap.enabled = true;
-                    this.renderer.shadowMap.type = PCFSoftShadowMap;
+                    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
                 }
                 this.m_createdLights!.push(light);
             });
