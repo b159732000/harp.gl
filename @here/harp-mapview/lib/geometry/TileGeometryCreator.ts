@@ -688,7 +688,10 @@ export class TileGeometryCreator {
                 const hasSolidLinesOutlines: boolean =
                     isSolidLineTechnique(technique) && technique.secondaryWidth !== undefined;
 
-                const object = new ObjectCtor(bufferGeometry, material);
+                // When the source geometry is split in groups, we
+                // should create objects with an array of materials.
+                const hasGroups = srcGeometry.groups.length > 0;
+                const object = new ObjectCtor(bufferGeometry, hasGroups ? [material] : material);
                 object.renderOrder = technique.renderOrder!;
 
                 if (group.renderOrderOffset !== undefined) {

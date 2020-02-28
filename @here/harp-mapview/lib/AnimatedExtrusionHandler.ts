@@ -5,7 +5,7 @@
  */
 
 import { TileKey } from "@here/harp-geoutils";
-import { ExtrusionFeature, ExtrusionFeatureDefs } from "@here/harp-materials";
+import { ExtrusionFeatureDefs } from "@here/harp-materials";
 import { MathUtils } from "@here/harp-utils";
 import { MapView, MapViewEventNames, RenderEvent } from "./MapView";
 import { Tile } from "./Tile";
@@ -194,10 +194,23 @@ export class AnimatedExtrusionTileHandler {
     set extrusionRatio(value: number) {
         this.m_animatedExtrusionRatio = value;
 
+        type ExtrusionMaterial = THREE.Material & { extrusionRatio?: number };
+
+        /**
+         * Update the extrusion materials.
+         */
+        const updateExtrusionRatio = (material?: ExtrusionMaterial | ExtrusionMaterial[]) => {
+            if (Array.isArray(material)) {
+                material.forEach(m => updateExtrusionRatio(m));
+            } else if (material && material.extrusionRatio !== undefined) {
+                material.extrusionRatio = value;
+            }
+        };
+
         this.m_extrudedObjects.forEach(object => {
-            const material = (object as THREE.Mesh | THREE.LineSegments)
-                .material as ExtrusionFeature;
-            material.extrusionRatio = this.m_animatedExtrusionRatio;
+            if (object instanceof THREE.Mesh || object instanceof THREE.LineSegments) {
+                updateExtrusionRatio(object.material);
+            }
         });
     }
 
