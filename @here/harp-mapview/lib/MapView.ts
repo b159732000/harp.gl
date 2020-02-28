@@ -688,6 +688,7 @@ export class MapView extends THREE.EventDispatcher {
 
     private m_visibleTiles: VisibleTileSet;
 
+    private m_elevationSource?: DataSource;
     private m_elevationRangeSource?: ElevationRangeSource;
     private m_elevationProvider?: ElevationProvider;
     private m_visibleTileSetLock: boolean = false;
@@ -2419,11 +2420,17 @@ export class MapView extends THREE.EventDispatcher {
         elevationRangeSource: ElevationRangeSource,
         elevationProvider: ElevationProvider
     ) {
+        // Remove previous elevation source if present
+        if (this.m_elevationSource && this.m_elevationSource !== elevationSource) {
+            this.removeDataSource(this.m_elevationSource);
+        }
+
         // Add as datasource if it was not added before
-        const isPresent = this.m_tileDataSources.some(ds => ds === elevationSource);
+        const isPresent = this.m_tileDataSources.indexOf(elevationSource) !== -1;
         if (!isPresent) {
             this.addDataSource(elevationSource);
         }
+        this.m_elevationSource = elevationSource;
         this.m_elevationRangeSource = elevationRangeSource;
         this.m_elevationProvider = elevationProvider;
         this.dataSources.forEach(dataSource => {
@@ -2441,6 +2448,7 @@ export class MapView extends THREE.EventDispatcher {
      */
     clearElevationSource(elevationSource: DataSource) {
         this.removeDataSource(elevationSource);
+        this.m_elevationSource = undefined;
         this.m_elevationRangeSource = undefined;
         this.m_elevationProvider = undefined;
         this.dataSources.forEach(dataSource => {
